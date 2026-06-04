@@ -6,3 +6,4 @@ openpyxl
 joblib
 matplotlib
 seaborn
+plotly
