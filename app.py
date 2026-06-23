@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import joblib
-import plotly.graph_objects as go
+import plotly.graph_objects as gogit
 
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -30,7 +30,6 @@ st.set_page_config(
 # Menggunakan CSS custom properties yang di-override
 # via [data-theme="dark"] / [data-theme="light"] (Streamlit ≥ 1.35)
 # dan @media prefers-color-scheme sebagai fallback.
-# Aksen tetap teal (#0ea882) di kedua mode.
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -605,7 +604,7 @@ if uploaded_file is not None:
         cluster_profile = (
             df_feat.groupby("CLUSTER")[
                 model_features +
-                ["ANOMALY_SCORE", "ANOMALY_FLAG"]
+                ["ANOMALY_SCORE"]
             ]
             .mean()
             .round(2)
@@ -619,9 +618,6 @@ if uploaded_file is not None:
 
         cluster_profile_show = cluster_profile.copy()
 
-        cluster_profile_show["ANOMALY_RATE"] = (
-            cluster_profile_show["ANOMALY_RATE"] * 100
-        ).round(1)
 
     # ─────────────────────────────────────────
     # Summary Metrics
