@@ -3,11 +3,12 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import joblib
-import plotly.graph_objects as gogit
+import plotly.graph_objects as go
 
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 from src.loader import load_excel
 from src.extract_features import (
@@ -546,8 +547,8 @@ if uploaded_file is not None:
         df_feat = df_ec_feat.merge(
             df_main_feat.drop(columns=["BRAND_SRC"], errors="ignore"),
             on="DSE_ID",
-            how="left"
-        )
+            how="left")
+        df_feat.columns = df_feat.columns.str.strip()
 
         # Fill missing
         num_cols = df_feat.select_dtypes(include=np.number).columns
@@ -563,61 +564,55 @@ if uploaded_file is not None:
         X        = df_feat[model_features]
         X_scaled = scaler.transform(X)
 
-        df_feat["ANOMALY_SCORE"] = -iso.decision_function(X_scaled)
-        df_feat["IS_ANOMALY"]    = (iso.predict(X_scaled) == -1).astype(int)
-        df_feat["ANOMALY_FLAG"] = (df_feat["IS_ANOMALY"] == -1).astype(int)
+        df_feat["ANOMALY_SCORE"]  = -iso.decision_function(X_scaled)
+        df_feat["IS_ANOMALY"]     = (iso.predict(X_scaled) == -1).astype(int)
+        df_feat["ANOMALY_FLAG"]   = (df_feat["IS_ANOMALY"] == -1).astype(int)
         df_feat["ANOMALY_REASON"] = df_feat.apply(generate_reason, axis=1)
+        df_feat["ANOMALY_REASON"] = df_feat.apply(
+            lambda row: row["ANOMALY_REASON"] if row["IS_ANOMALY"] == 1 else "-", axis=1)
+        df_feat["STATUS"] = df_feat["IS_ANOMALY"].map({1: "Anomali", 0: "Normal"})
 
         # ─────────────────────────────────────────
-        # Clustering
+        # Quadrant Segmentation
         # ─────────────────────────────────────────
-        best_k = 3
-        best_score = -1
+        KPI_COLS = [f for f in [
+            'SP_ACH','OSA_ACH','FWA_ACH','KPI_AVG_ACH',
+            'SP_PACE_GAP','OSA_PACE_GAP','FWA_PACE_GAP','KPI_AVG_ACH_MTD',
+            'SCORE_SELLIN','CHAMP_TOTAL_MTD','COVERAGE_RATE'
+        ] if f in df_feat.columns]
 
-        for k in range(3, 8):
+        EC_COLS = [f for f in [
+            'EC_RATE','EC_TREND_WEEKLY','AVG_VISIT','VISIT_CV','ZERO_VISIT_RATE',
+            'MAX_GAP_HARI','AVG_SELLIN','SELLIN_CV','SELLIN_PER_VISIT',
+            'EOM_CONCENTRATION','SOM_CONCENTRATION','MID_CONCENTRATION','BELOW_THRESHOLD_RATE'
+        ] if f in df_feat.columns]
 
-            km = KMeans(
-                n_clusters=k,
-                random_state=42,
-                n_init=10
-            )
+        pca_kpi = PCA(n_components=1)
+        pca_ec  = PCA(n_components=1)
 
-            cluster_labels = km.fit_predict(X_scaled)
+        axis_x = pca_kpi.fit_transform(
+            StandardScaler().fit_transform(df_feat[KPI_COLS].fillna(0))
+        ).ravel()
+        axis_y = pca_ec.fit_transform(
+            StandardScaler().fit_transform(df_feat[EC_COLS].fillna(0))
+        ).ravel()
 
-            score = silhouette_score(
-                X_scaled,
-                cluster_labels
-            )
+        df_feat['PCA_KPI'] = axis_x
+        df_feat['PCA_EC']  = axis_y
 
-            if score > best_score:
-                best_score = score
-                best_k = k
+        def assign_quadrant(x, y):
+            if x >= 0 and y >= 0:   return 'Q1: High KPI - High EC'
+            elif x < 0 and y >= 0:  return 'Q2: Low KPI - High EC'
+            elif x >= 0 and y < 0:  return 'Q3: High KPI - Low EC'
+            else:                    return 'Q4: Low KPI - Low EC'
 
-        km_final = KMeans(
-            n_clusters=best_k,
-            random_state=42,
-            n_init=10
+        df_feat['QUADRANT'] = [assign_quadrant(x, y) for x, y in zip(axis_x, axis_y)]
+
+        # anomaly_df dibuat SETELAH QUADRANT ada
+        anomaly_df = (
+            df_feat[df_feat["IS_ANOMALY"] == 1]
+            .sort_values("ANOMALY_SCORE", ascending=False)
         )
-
-        df_feat["CLUSTER"] = km_final.fit_predict(X_scaled)
-
-        cluster_profile = (
-            df_feat.groupby("CLUSTER")[
-                model_features +
-                ["ANOMALY_SCORE"]
-            ]
-            .mean()
-            .round(2)
-        )
-
-        cluster_profile = cluster_profile.rename(
-            columns={
-                "ANOMALY_FLAG": "ANOMALY_RATE"
-            }
-        )
-
-        cluster_profile_show = cluster_profile.copy()
-
 
     # ─────────────────────────────────────────
     # Summary Metrics
@@ -661,33 +656,10 @@ if uploaded_file is not None:
     </div>
     """, unsafe_allow_html=True)
 
-    anomaly_df = (
-        df_feat[df_feat["IS_ANOMALY"] == 1]
-        .sort_values("ANOMALY_SCORE", ascending=False)
-    )
-
     show_cols = [
-        "DSE_ID",
-        "BRAND_SRC",
-        'MICRO_CLUSTER',
-        "BRANCH",
-        "AREA",
-        "OUTLET",
-        "N_HARI_KERJA",
-        "TOTAL_VISIT_SUMMARY",
-        'TOTAL_SELLIN_SUMMARY',
-        "AVG_VISIT",
-        "AVG_SELLIN",
-        "SELLIN_PER_VISIT",
-        "EC_RATE",
-        "SP_ACH",
-        "OSA_ACH",
-        "FWA_ACH",
-        "KPI_AVG_ACH",
-        "ANOMALY_SCORE",
-        "ANOMALY_REASON"
+        "DSE_ID", "BRAND_SRC", "OUTLET", "PARTNER_NAME", "MICRO_CLUSTER",
+        "BRANCH", "AREA", "QUADRANT","STATUS", "ANOMALY_SCORE", "ANOMALY_REASON"
     ]
-
     show_cols = [c for c in show_cols if c in anomaly_df.columns]
 
     if len(anomaly_df) > 0:
@@ -696,73 +668,17 @@ if uploaded_file is not None:
             use_container_width=True,
             hide_index=True,
             column_config={
-
-                "DSE_ID": "DSE ID",
-
-                "BRAND_SRC": "Brand",
-
-                'MICRO_CLUSTER': "Micro Cluster",
-
-                "OUTLET": "Outlet",
-
-                "BRANCH": "Branch",
-
-                "AREA": "Area",
-
-                "KPI_AVG_ACH": "Performance Average",
-
-                "N_HARI_KERJA": st.column_config.NumberColumn(
-                    "Hari Kerja",
-                    format="%d"
-                ),
-
-                "TOTAL_VISIT_SUMMARY": st.column_config.NumberColumn(
-                    "Total Visit",
-                    format="%d"
-                ),
-
-                "TOTAL_SELLIN_SUMMARY": st.column_config.NumberColumn(
-                    "Total Sell In",
-                    format="%d"
-                ),
-
-                "AVG_VISIT": st.column_config.NumberColumn(
-                    "Avg Visit",
-                    format="%.2f"
-                ),
-
-                "AVG_SELLIN": st.column_config.NumberColumn(
-                    "Avg Sell In",
-                    format="%.2f"
-                ),
-
-                "SELLIN_PER_VISIT": st.column_config.NumberColumn(
-                    "Sell In / Visit",
-                    format="%.2f"
-                ),
-
-                "EC_RATE": st.column_config.NumberColumn(
-                    "EC Rate",
-                    format="%.2f%%"
-                ),
-
-                "SP_ACH": st.column_config.NumberColumn(
-                    "SP Ach",
-                    format="%.2f%%"
-                ),
-
-                "OSA_ACH": st.column_config.NumberColumn(
-                    "OSA Ach",
-                    format="%.2f%%"
-                ),
-
-                "FWA_ACH": st.column_config.NumberColumn(
-                    "FWA Ach",
-                    format="%.2f%%"
-                ),
-
-
-                "ANOMALY_SCORE": st.column_config.ProgressColumn(
+                "DSE_ID"        : "DSE ID",
+                "BRAND_SRC"     : "Brand",
+                "OUTLET"        : "Outlet",
+                "PARTNER_NAME"  : "Partner Name",
+                "MICRO_CLUSTER" : "Micro Cluster",
+                "BRANCH"        : "Branch",
+                "AREA"          : "Area",
+                "QUADRANT"      : "Segmentasi",
+                "STATUS"        : "Status",
+                "ANOMALY_REASON": "Alasan",
+                "ANOMALY_SCORE" : st.column_config.ProgressColumn(
                     "Anomaly Score",
                     help="Semakin tinggi, semakin menyimpang",
                     format="%.4f",
@@ -774,18 +690,28 @@ if uploaded_file is not None:
     else:
         st.info("Tidak ada data anomali untuk ditampilkan.")
 
-
     # ─────────────────────────────────────────
     # Download
     # ─────────────────────────────────────────
     st.markdown("")
-    col_dl, col_empty = st.columns([1, 3])
-    with col_dl:
-        csv_data = anomaly_df.to_csv(index=False).encode("utf-8")
+    col_dl1, col_dl2, col_empty = st.columns([1, 1, 2])
+
+    with col_dl1:
+        csv_anomaly = anomaly_df[show_cols].to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="⬇ Download Hasil Analisis",
-            data=csv_data,
+            label="⬇ Download DSE Anomali",
+            data=csv_anomaly,
             file_name="anomaly_result.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+    with col_dl2:
+        csv_all = df_feat[show_cols].to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="⬇ Download Semua DSE",
+            data=csv_all,
+            file_name="all_dse_result.csv",
             mime="text/csv",
             use_container_width=True
         )
@@ -799,221 +725,115 @@ if uploaded_file is not None:
         <div class="section-line"></div>
     </div>
     """, unsafe_allow_html=True)
- 
+
     CHART_H   = 360
     GRID_CLR  = "rgba(128,128,128,0.10)"
     BG_TRANSP = "rgba(0,0,0,0)"
- 
+
     col1, col2, col3 = st.columns(3)
- 
-    # ══════════════════════════════════════════
-    # Col 1 — Top Branch dengan DSE Anomali
-    # ══════════════════════════════════════════
+
     with col1:
- 
         st.markdown("""
         <div class="chart-card">
             <div class="chart-title">Top Branch</div>
             <div class="chart-subtitle">Jumlah DSE anomali terbanyak per branch</div>
         """, unsafe_allow_html=True)
- 
+
         branch_anom = (
-            anomaly_df.groupby("BRANCH")
-            .size()
+            anomaly_df.groupby("BRANCH").size()
             .reset_index(name="Jumlah DSE")
             .sort_values("Jumlah DSE", ascending=True)
             .tail(10)
         )
- 
-        fig_branch = px.bar(
-            branch_anom,
-            x="Jumlah DSE",
-            y="BRANCH",
-            orientation="h",
-            color_discrete_sequence=["#ff8a00"],
-        )
- 
+        fig_branch = px.bar(branch_anom, x="Jumlah DSE", y="BRANCH",
+                            orientation="h", color_discrete_sequence=["#ff8a00"])
         fig_branch.update_layout(
-            paper_bgcolor=BG_TRANSP,
-            plot_bgcolor=BG_TRANSP,
-            height=CHART_H,
-            margin=dict(t=4, b=4, l=4, r=16),
-            yaxis_title=None,
-            xaxis_title=None,
-            xaxis=dict(
-                showgrid=True,
-                gridcolor=GRID_CLR,
-                tickfont=dict(size=11),
-                zeroline=False,
-            ),
-            yaxis=dict(
-                showgrid=False,
-                tickfont=dict(size=11),
-            ),
+            paper_bgcolor=BG_TRANSP, plot_bgcolor=BG_TRANSP, height=CHART_H,
+            margin=dict(t=4, b=4, l=4, r=16), yaxis_title=None, xaxis_title=None,
+            xaxis=dict(showgrid=True, gridcolor=GRID_CLR, tickfont=dict(size=11), zeroline=False),
+            yaxis=dict(showgrid=False, tickfont=dict(size=11)),
         )
- 
-        fig_branch.update_traces(
-            marker_line_width=0,
-            hovertemplate="<b>%{y}</b><br>%{x} DSE<extra></extra>"
-        )
- 
+        fig_branch.update_traces(marker_line_width=0,
+                                  hovertemplate="<b>%{y}</b><br>%{x} DSE<extra></extra>")
         st.plotly_chart(fig_branch, use_container_width=True, config={"displayModeBar": False})
         st.markdown("</div>", unsafe_allow_html=True)
- 
-    # ══════════════════════════════════════════
-    # Col 2 — Anomali per Brand (Stacked Bar per Area)
-    # ══════════════════════════════════════════
+
     with col2:
- 
         st.markdown("""
         <div class="chart-card">
             <div class="chart-title">Brand IM3 vs 3ID</div>
             <div class="chart-subtitle">Distribusi anomali per brand di tiap area</div>
         """, unsafe_allow_html=True)
- 
+
         brand_area = (
-            anomaly_df.groupby(["AREA", "BRAND_SRC"])
-            .size()
+            anomaly_df.groupby(["AREA", "BRAND_SRC"]).size()
             .reset_index(name="Jumlah")
         )
- 
-        fig_brand = px.bar(
-            brand_area,
-            x="AREA",
-            y="Jumlah",
-            color="BRAND_SRC",
-            barmode="stack",
-            color_discrete_map={
-                "IM3": "#ff8a00",
-                "3ID": "#a855f7",
-            },
-            labels={"BRAND_SRC": "Brand", "AREA": "", "Jumlah": "Jumlah DSE"},
-        )
- 
+        fig_brand = px.bar(brand_area, x="AREA", y="Jumlah", color="BRAND_SRC",
+                           barmode="stack",
+                           color_discrete_map={"IM3": "#ff8a00", "3ID": "#a855f7"},
+                           labels={"BRAND_SRC": "Brand", "AREA": "", "Jumlah": "Jumlah DSE"})
         fig_brand.update_layout(
-            paper_bgcolor=BG_TRANSP,
-            plot_bgcolor=BG_TRANSP,
-            height=CHART_H,
+            paper_bgcolor=BG_TRANSP, plot_bgcolor=BG_TRANSP, height=CHART_H,
             margin=dict(t=4, b=4, l=4, r=4),
-            xaxis=dict(
-                showgrid=False,
-                tickfont=dict(size=10),
-                tickangle=-30,
-                zeroline=False,
-            ),
-            yaxis=dict(
-                showgrid=True,
-                gridcolor=GRID_CLR,
-                tickfont=dict(size=11),
-                title=None,
-                zeroline=False,
-            ),
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=-0.45,
-                xanchor="center",
-                x=0.5,
-                font=dict(size=11),
-                title=None,
-            ),
+            xaxis=dict(showgrid=False, tickfont=dict(size=10), tickangle=-30, zeroline=False),
+            yaxis=dict(showgrid=True, gridcolor=GRID_CLR, tickfont=dict(size=11),
+                       title=None, zeroline=False),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.45,
+                        xanchor="center", x=0.5, font=dict(size=11), title=None),
         )
- 
-        fig_brand.update_traces(
-            marker_line_width=0,
-            hovertemplate="<b>%{x}</b> — %{data.name}<br>%{y} DSE<extra></extra>"
-        )
- 
+        fig_brand.update_traces(marker_line_width=0,
+                                 hovertemplate="<b>%{x}</b> — %{data.name}<br>%{y} DSE<extra></extra>")
         st.plotly_chart(fig_brand, use_container_width=True, config={"displayModeBar": False})
         st.markdown("</div>", unsafe_allow_html=True)
- 
-    # ══════════════════════════════════════════
-    # Col 3 — Radar Chart Profil Normal vs Anomali
-    # ══════════════════════════════════════════
+
     with col3:
- 
         st.markdown("""
         <div class="chart-card">
             <div class="chart-title">Profil DSE</div>
             <div class="chart-subtitle">Perbandingan dimensi kinerja normal vs anomali</div>
         """, unsafe_allow_html=True)
- 
-        radar_cols = {
-            "EC_RATE":       "EC Rate",
-            "SP_ACH":        "SP Ach",
-            "OSA_ACH":       "OSA Ach",
-            "FWA_ACH":       "FWA Ach",
-            "AVG_SELLIN":    "Sellin Avg",
-            "AVG_VISIT": "Visit Avg",
-        }
- 
-        radar_cols = {k: v for k, v in radar_cols.items() if k in df_feat.columns}
- 
+
+        radar_cols = {k: v for k, v in {
+            "EC_RATE": "EC Rate", "SP_ACH": "SP Ach", "OSA_ACH": "OSA Ach",
+            "FWA_ACH": "FWA Ach", "AVG_SELLIN": "Sellin Avg", "AVG_VISIT": "Visit Avg",
+        }.items() if k in df_feat.columns}
+
         def norm_series(s):
             mn, mx = s.min(), s.max()
             return ((s - mn) / (mx - mn) * 100) if mx > mn else s * 0
- 
+
         radar_normal  = [norm_series(df_feat[df_feat["IS_ANOMALY"] == 0][c]).mean() for c in radar_cols]
         radar_anomali = [norm_series(df_feat[df_feat["IS_ANOMALY"] == 1][c]).mean() for c in radar_cols]
         labels        = list(radar_cols.values())
- 
-        import plotly.graph_objects as go
- 
+
         fig_radar = go.Figure()
- 
         fig_radar.add_trace(go.Scatterpolar(
-            r=radar_normal + [radar_normal[0]],
-            theta=labels + [labels[0]],
-            fill="toself",
-            fillcolor="rgba(255,138,0,0.15)",
-            line=dict(color="#ff8a00", width=2),
-            name="Normal",
-        ))
- 
+            r=radar_normal + [radar_normal[0]], theta=labels + [labels[0]],
+            fill="toself", fillcolor="rgba(255,138,0,0.15)",
+            line=dict(color="#ff8a00", width=2), name="Normal"))
         fig_radar.add_trace(go.Scatterpolar(
-            r=radar_anomali + [radar_anomali[0]],
-            theta=labels + [labels[0]],
-            fill="toself",
-            fillcolor="rgba(168,85,247,0.15)",
-            line=dict(color="#a855f7", width=2),
-            name="Anomali",
-        ))
- 
+            r=radar_anomali + [radar_anomali[0]], theta=labels + [labels[0]],
+            fill="toself", fillcolor="rgba(168,85,247,0.15)",
+            line=dict(color="#a855f7", width=2), name="Anomali"))
         fig_radar.update_layout(
             polar=dict(
                 bgcolor="rgba(0,0,0,0)",
-                angularaxis=dict(
-                    tickfont=dict(size=11),
-                    linecolor="rgba(128,128,128,0.15)",
-                ),
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 100],
-                    tickfont=dict(size=9),
-                    gridcolor="rgba(128,128,128,0.12)",
-                    linecolor="rgba(128,128,128,0.12)",
-                    tickvals=[25, 50, 75, 100],
-                ),
+                angularaxis=dict(tickfont=dict(size=11), linecolor="rgba(128,128,128,0.15)"),
+                radialaxis=dict(visible=True, range=[0, 100], tickfont=dict(size=9),
+                                gridcolor="rgba(128,128,128,0.12)",
+                                linecolor="rgba(128,128,128,0.12)", tickvals=[25, 50, 75, 100]),
             ),
-            paper_bgcolor=BG_TRANSP,
-            height=CHART_H,
-            margin=dict(t=16, b=16, l=16, r=16),
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=-0.18,
-                xanchor="center",
-                x=0.5,
-                font=dict(size=11),
-            ),
+            paper_bgcolor=BG_TRANSP, height=CHART_H,
+            margin=dict(t=16, b=16, l=16, r=16), showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.18,
+                        xanchor="center", x=0.5, font=dict(size=11)),
         )
- 
         st.plotly_chart(fig_radar, use_container_width=True, config={"displayModeBar": False})
         st.markdown("</div>", unsafe_allow_html=True)
 
     # ─────────────────────────────────────────
-    # Segmentasi DSE berdasarkan clustering
+    # Segmentasi DSE
     # ─────────────────────────────────────────
     st.markdown("""
     <div class="section-header">
@@ -1022,140 +842,96 @@ if uploaded_file is not None:
     </div>
     """, unsafe_allow_html=True)
 
-    # Jumlah DSE per cluster Visualisasi
-    cluster_count = (
-        df_feat["CLUSTER"]
-        .value_counts()
-        .sort_index()
-        .reset_index()
-    )
+    QUADRANT_COLORS = {
+        'Q1: High KPI - High EC': '#2ecc71',
+        'Q2: Low KPI - High EC' : '#f39c12',
+        'Q3: High KPI - Low EC' : '#3498db',
+        'Q4: Low KPI - Low EC'  : '#e74c3c',
+    }
 
-    cluster_count.columns = [
-        "Cluster",
-        "Jumlah DSE"
-    ]
+    quadrant_count = df_feat['QUADRANT'].value_counts().reset_index()
+    quadrant_count.columns = ['Kuadran', 'Jumlah DSE']
 
-    fig_cluster = px.bar(
-        cluster_count,
-        x="Cluster",
-        y="Jumlah DSE",
-        color="Cluster",
-    )
-
-    fig_cluster.update_layout(
-        height=400,
-        showlegend=False
-    )
-
-    
-    ## PCA Visualization
-    pca = PCA(n_components=2)
-
-    X_pca = pca.fit_transform(X_scaled)
+    fig_cluster = px.bar(quadrant_count, x='Kuadran', y='Jumlah DSE',
+                         color='Kuadran', color_discrete_map=QUADRANT_COLORS)
+    fig_cluster.update_layout(height=400, showlegend=False, xaxis=dict(tickangle=-15))
 
     plot_df = pd.DataFrame({
-        "PC1": X_pca[:,0],
-        "PC2": X_pca[:,1],
-        "CLUSTER": df_feat["CLUSTER"].astype(str),
-        "ANOMALY": np.where(
-            df_feat["IS_ANOMALY"] == 1,
-            "Anomaly",
-            "Normal"
-        )
+        'PCA_KPI' : axis_x,
+        'PCA_EC'  : axis_y,
+        'QUADRANT': df_feat['QUADRANT'],
+        'ANOMALY' : np.where(df_feat['IS_ANOMALY'] == 1, 'Anomaly', 'Normal'),
+        'DSE_ID'  : df_feat['DSE_ID'],
     })
-    fig_pca = px.scatter(
-        plot_df,
-        x="PC1",
-        y="PC2",
-        color="CLUSTER",
-        symbol="ANOMALY",
-        opacity=0.8,
-        title=f"K-Means Clustering (K={best_k})"
-    )
 
+    fig_pca = px.scatter(plot_df, x='PCA_KPI', y='PCA_EC', color='QUADRANT',
+                         symbol='ANOMALY', color_discrete_map=QUADRANT_COLORS,
+                         hover_data=['DSE_ID'], opacity=0.75,
+                         title='Segmentasi Kuadran (KPI vs EC Space)')
+    fig_pca.add_hline(y=0, line_dash='dash', line_color='gray', line_width=1)
+    fig_pca.add_vline(x=0, line_dash='dash', line_color='gray', line_width=1)
     fig_pca.update_layout(
-        height=400
+        height=400,
+        xaxis_title=f'PC1 KPI ({pca_kpi.explained_variance_ratio_[0]*100:.1f}% var) → KPI Performance ↑',
+        yaxis_title=f'PC1 EC ({pca_ec.explained_variance_ratio_[0]*100:.1f}% var) → EC Efficiency ↑',
     )
 
-    
-    # Visualization
     col_cluster, col_pca = st.columns(2)
-
     with col_cluster:
-
-        st.markdown("##### Distribusi Cluster")
-
-        st.plotly_chart(
-            fig_cluster,
-            use_container_width=True
-        )
-
+        st.markdown("##### Distribusi Kuadran")
+        st.plotly_chart(fig_cluster, use_container_width=True)
     with col_pca:
+        st.markdown("##### Segmentasi KPI vs EC")
+        st.plotly_chart(fig_pca, use_container_width=True)
 
-        st.markdown("##### Visualisasi PCA")
-
-        st.plotly_chart(
-            fig_pca,
-            use_container_width=True
-        )
-
-    # Profile Cluster
-    st.subheader("Profil Cluster")
-
-    st.dataframe(
-        cluster_profile_show,
-        use_container_width=True
+    st.subheader("Profil Kuadran")
+    quadrant_profile = (
+        df_feat.groupby('QUADRANT')[KPI_COLS + EC_COLS + ['ANOMALY_SCORE']]
+        .mean().round(2)
     )
+    st.dataframe(quadrant_profile, use_container_width=True)
 
     with st.expander("📖 Deskripsi Feature"):
-
         st.markdown("""
-    | Feature | Deskripsi |
-    |----------|----------|
-    | EC_RATE | Persentase hari dengan EC = 100 |
-    | EC_TREND_WEEKLY | Tren EC antar minggu (positif=membaik, negatif=memburuk) |
-    | AVG_VISIT | Rata-rata jumlah kunjungan |
-    | VISIT_CV | Koefisiensi variasi visit (konsistensi kunjungan; makin kecil = makin stabil) |
-    | AVG_SELLIN | Rata-rata transaksi sell in per hari kerja |
-    | SELLIN_CV | Variasi sell in (konsistensi penjualan harian) |
-    | SELLIN_PER_VISIT | Efektivitas kunjungan menghasilkan sell in |
-    | EOM_CONCENTRATION | Proporsi visit di 5 hari terakhir bulan (End of Month behavior)|
-    | SOM_CONCENTRATION | Proporsi visit di 5 hari pertama bulan (Start of Month behavior) |
-    | MID_CONCENTRATION | Proporsi visit di hari tengah bulan (hari 8–22) |
-    | BELOW_THRESHOLD_RATE | Proporsi hari di mana visit/sell-in di bawah threshold EC |
-    | SP_ACH | Presentase achievement SP |
-    | OSA_ACH | Presentase achievement OSA |
-    | FWA_ACH | Presentase achievement FWA |
-    | KPI_AVG_ACH | Rata-rata achievement KPI |
-    | SCORE_SELLIN | Skor performa sell in |
-    | COVERAGE_RATE | Rasio SP actual terhadap target sell-in (SP SELLIN actual / TARGET SELLIN) |
-    | FLAG_DENSUS | Indikator Densus |
-    | ANOMALY_SCORE | Tingkat penyimpangan dari mayoritas DSE |
-    | ANOMALY_RATE | Persentase DSE anomali dalam cluster |
-    """)
+| Feature | Deskripsi |
+|---|---|
+| EC_RATE | Persentase hari dengan EC = 100 |
+| EC_TREND_WEEKLY | Tren EC antar minggu (positif=membaik, negatif=memburuk) |
+| AVG_VISIT | Rata-rata jumlah kunjungan |
+| VISIT_CV | Konsistensi kunjungan; makin kecil = makin stabil |
+| AVG_SELLIN | Rata-rata transaksi sell in per hari kerja |
+| SELLIN_CV | Variasi sell in harian |
+| SELLIN_PER_VISIT | Efektivitas kunjungan menghasilkan sell in |
+| EOM_CONCENTRATION | Proporsi visit di 5 hari terakhir bulan |
+| SOM_CONCENTRATION | Proporsi visit di 5 hari pertama bulan |
+| MID_CONCENTRATION | Proporsi visit di hari tengah bulan (hari 8–22) |
+| BELOW_THRESHOLD_RATE | Proporsi hari di bawah threshold EC |
+| SP_ACH | Achievement SP |
+| OSA_ACH | Achievement OSA |
+| FWA_ACH | Achievement FWA |
+| KPI_AVG_ACH | Rata-rata achievement KPI |
+| SCORE_SELLIN | Skor performa sell in |
+| COVERAGE_RATE | Rasio SP actual terhadap target sell-in |
+| ANOMALY_SCORE | Tingkat penyimpangan dari mayoritas DSE |
+""")
 
-    risk_cluster = cluster_profile["ANOMALY_SCORE"].idxmax()
-    best_cluster = cluster_profile["KPI_AVG_ACH"].idxmax()
+    q4_count = (df_feat['QUADRANT'] == 'Q4: Low KPI - Low EC').sum()
+    q1_count = (df_feat['QUADRANT'] == 'Q1: High KPI - High EC').sum()
 
     c1, c2 = st.columns(2)
-
     with c1:
-        st.warning(
-            f"⚠️ Cluster {risk_cluster} memiliki rata-rata anomaly score tertinggi.")
-
+        st.warning(f"⚠️ {q4_count} DSE masuk Q4 (Low KPI & Low EC) — prioritas intervensi.")
     with c2:
-        st.success(
-            f"🏆 Cluster {best_cluster} memiliki Performance achievement tertinggi.")
-    
+        st.success(f"🏆 {q1_count} DSE masuk Q1 (High KPI & High EC) — top performer.")
+
     # ─────────────────────────────────────────
     # Footer
     # ─────────────────────────────────────────
     st.markdown("---")
     st.caption("""
     📊 Sumber Data
-               
+
     • Aktivitas harian (Visit, Sell In, dan EC) berasal dari sheet DSE_IM3_EC dan DSE_3ID_EC.
-    
+
     • Data performa DSE (SP Achievement, OSA Achievement, dan FWA Achievement) berasal dari sheet DSE_IM3 dan DSE_3ID.
     """)
-
