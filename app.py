@@ -848,26 +848,42 @@ if uploaded_file is not None:
         'Q3: High KPI - Low EC' : '#3498db',
         'Q4: Low KPI - Low EC'  : '#e74c3c',
     }
+    
+    QUADRANT_ORDER = [
+    'Q1: High KPI - High EC',
+    'Q2: Low KPI - High EC',
+    'Q3: High KPI - Low EC',
+    'Q4: Low KPI - Low EC'
+    ]
 
     quadrant_count = df_feat['QUADRANT'].value_counts().reset_index()
     quadrant_count.columns = ['Kuadran', 'Jumlah DSE']
+    quadrant_count['Kuadran'] = pd.Categorical(
+        quadrant_count['Kuadran'],
+        categories=QUADRANT_ORDER,
+        ordered=True
+    )
 
-    fig_cluster = px.bar(quadrant_count, x='Kuadran', y='Jumlah DSE',
-                         color='Kuadran', color_discrete_map=QUADRANT_COLORS)
+    quadrant_count = quadrant_count.sort_values('Kuadran')
+
+    fig_cluster = px.bar(quadrant_count, x='Kuadran', y='Jumlah DSE',color='Kuadran', 
+                         color_discrete_map=QUADRANT_COLORS, category_orders={"Kuadran": QUADRANT_ORDER})
     fig_cluster.update_layout(height=400, showlegend=False, xaxis=dict(tickangle=-15))
 
     plot_df = pd.DataFrame({
         'PCA_KPI' : axis_x,
         'PCA_EC'  : axis_y,
-        'QUADRANT': df_feat['QUADRANT'],
+        'KUADRAN': df_feat['QUADRANT'],
         'ANOMALY' : np.where(df_feat['IS_ANOMALY'] == 1, 'Anomaly', 'Normal'),
         'DSE_ID'  : df_feat['DSE_ID'],
     })
 
-    fig_pca = px.scatter(plot_df, x='PCA_KPI', y='PCA_EC', color='QUADRANT',
-                         symbol='ANOMALY', color_discrete_map=QUADRANT_COLORS,
+    fig_pca = px.scatter(plot_df, x='PCA_KPI', y='PCA_EC', color='KUADRAN',
+                         symbol='ANOMALY', color_discrete_map=QUADRANT_COLORS, category_orders={
+                                "KUADRAN": QUADRANT_ORDER,
+                                "ANOMALY": ["Normal", "Anomaly"]},
                          hover_data=['DSE_ID'], opacity=0.75,
-                         title='Segmentasi Kuadran (KPI vs EC Space)')
+                         title='Segmentasi Kuadran (KPI vs Effective Call)')
     fig_pca.add_hline(y=0, line_dash='dash', line_color='gray', line_width=1)
     fig_pca.add_vline(x=0, line_dash='dash', line_color='gray', line_width=1)
     fig_pca.update_layout(
@@ -919,10 +935,11 @@ if uploaded_file is not None:
     q1_count = (df_feat['QUADRANT'] == 'Q1: High KPI - High EC').sum()
 
     c1, c2 = st.columns(2)
+
     with c1:
-        st.warning(f"⚠️ {q4_count} DSE masuk Q4 (Low KPI & Low EC) — prioritas intervensi.")
+        st.warning(f"⚠️ {q4_count:,} DSE masuk Q4 (Low KPI & Low EC) — prioritas intervensi.")
     with c2:
-        st.success(f"🏆 {q1_count} DSE masuk Q1 (High KPI & High EC) — top performer.")
+        st.success(f"🏆 {q1_count:,} DSE masuk Q1 (High KPI & High EC) — top performer.")
 
     # ─────────────────────────────────────────
     # Footer
